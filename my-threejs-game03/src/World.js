@@ -1,28 +1,58 @@
 import * as THREE from 'three';
-import { buildingData } from './mapData.js';
-import { createTrain } from './Train.js'; // ★電車モジュールをインポート
+import { buildingData, pitData } from './mapData.js'; // ★ pitData も読み込む
+import { createTrain } from './Train.js';
 import { createWater } from './Water.js';
+import { createPits } from './Pit.js';
 
 export function createWorld(scene) {
     scene.background = new THREE.Color(0x111111);
 
     const textureLoader = new THREE.TextureLoader();
 
-    // 地面の作成
+    // 1. 地面（ベース）の作成：★ pitData の位置をくり抜く
     const groundTexture = textureLoader.load('./public/textures/ground.jpg');
     groundTexture.wrapS = THREE.RepeatWrapping;
     groundTexture.wrapT = THREE.RepeatWrapping;
-    groundTexture.repeat.set(8, 8);
+    // ShapeGeometry の UV 座標スケールに合わせてリピートを調整
+    groundTexture.repeat.set(0.25, 0.25); 
     groundTexture.colorSpace = THREE.SRGBColorSpace;
 
+    // 30x30 の正方形の輪郭を定義
+    const groundShape = new THREE.Shape();
+    groundShape.moveTo(-15, -15);
+    groundShape.lineTo(15, -15);
+    groundShape.lineTo(15, 15);
+    groundShape.lineTo(-15, 15);
+    groundShape.closePath();
+
+    // pitData に定義された穴を地面からくり抜く
+    pitData.forEach(pit => {
+        const halfW = pit.width / 2;
+        const halfD = pit.depth / 2;
+        const hole = new THREE.Path();
+        
+        // X軸回転(-Math.PI / 2)でXZ平面に倒すため、Shape上のY座標は「-Z」に対応する
+        const x = pit.positionX;
+        const y = -pit.positionZ;
+
+        hole.moveTo(x - halfW, y - halfD);
+        hole.lineTo(x + halfW, y - halfD);
+        hole.lineTo(x + halfW, y + halfD);
+        hole.lineTo(x - halfW, y + halfD);
+        hole.closePath();
+
+        groundShape.holes.push(hole);
+    });
+
+    const groundGeometry = new THREE.ShapeGeometry(groundShape);
     const plane = new THREE.Mesh(
-        new THREE.PlaneGeometry(30, 30),
+        groundGeometry,
         new THREE.MeshBasicMaterial({ map: groundTexture, side: THREE.DoubleSide })
     );
-    plane.rotation.x = Math.PI / 2;
+    plane.rotation.x = -Math.PI / 2; // 水平に寝かせる
     scene.add(plane);
 
-    // 建物の作成
+    // 2. 建物（障害物）の作成
     const buildings = [];
     const wallTexture = textureLoader.load('./public/textures/wall.jpg');
     wallTexture.colorSpace = THREE.SRGBColorSpace;
@@ -40,10 +70,10 @@ export function createWorld(scene) {
         buildings.push(mesh);
     });
 
-    // ★ 外部化した Train.js から電車を作成
+    // 3. 各モジュール（電車、水、一段低い空間）の生成
     const train = createTrain(scene);
     const waters = createWater(scene);
+    const pits = createPits(scene, textureLoader);
 
-    // main.js で使うために建物の配列と電車を返却
-    return { buildings, train, waters };
+    return { buildings, train, waters, pits };
 }

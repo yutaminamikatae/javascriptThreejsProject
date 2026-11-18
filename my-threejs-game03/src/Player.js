@@ -4,7 +4,6 @@ export function createPlayer(scene) {
     const playerGeometry = new THREE.BoxGeometry(0.8, 1.8, 0.8);
     const textureLoader = new THREE.TextureLoader();
 
-    // ★ご指定いただいた面ごとのテクスチャ設定を反映
     const materials = [
         new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_leftside.jpg') }),  
         new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_rightside.jpg') }),  
@@ -28,7 +27,8 @@ export function createPlayer(scene) {
     return player;
 }
 
-export function updatePlayer(player, keys, buildings, config, camera, train) {
+// ★ 引数に train と pits を受け取れるように設定
+export function updatePlayer(player, keys, buildings, config, camera, train, pits) {
     const speed = config.playerSpeed;
     const gravity = config.gravity;
     const jumpPower = config.jumpPower;
@@ -52,7 +52,7 @@ export function updatePlayer(player, keys, buildings, config, camera, train) {
         moveDir.normalize();
     }
 
-    // --- 移動と壁（建物）との衝突判定 ---
+    // --- 移動と壁（建物・段差の壁）との衝突判定 ---
     if (moveDir.lengthSq() > 0) {
         // X軸移動
         player.position.x += moveDir.x * speed;
@@ -62,6 +62,19 @@ export function updatePlayer(player, keys, buildings, config, camera, train) {
                 player.position.x -= moveDir.x * speed;
             }
         }
+        // 穴の底にいるとき、地上（Y=0）の壁にめり込まないよう押し戻す判定
+        if (pits && (player.position.y - 0.9) < -0.1) {
+            for (const pit of pits) {
+                const p = pit.data;
+                const halfW = p.width / 2 - 0.4; // プレイヤーの半径分を考慮
+                const halfD = p.depth / 2 - 0.4;
+                // 穴の境界から外へ出ようとしたらX移動をキャンセル
+                if (Math.abs(player.position.x - p.positionX) > halfW &&
+                    Math.abs(player.position.z - p.positionZ) <= p.depth / 2) {
+                    player.position.x -= moveDir.x * speed;
+                }
+            }
+        }
 
         // Z軸移動
         player.position.z += moveDir.z * speed;
@@ -69,6 +82,18 @@ export function updatePlayer(player, keys, buildings, config, camera, train) {
         for (const b of buildings) {
             if (playerBox.intersectsBox(b.box3) && (player.position.y - 0.9) < b.topY) {
                 player.position.z -= moveDir.z * speed;
+            }
+        }
+        // 穴の底にいるとき、Z軸方向の壁にめり込まないよう押し戻す判定
+        if (pits && (player.position.y - 0.9) < -0.1) {
+            for (const pit of pits) {
+                const p = pit.data;
+                const halfW = p.width / 2 - 0.4;
+                const halfD = p.depth / 2 - 0.4;
+                if (Math.abs(player.position.z - p.positionZ) > halfD &&
+                    Math.abs(player.position.x - p.positionX) <= p.width / 2) {
+                    player.position.z -= moveDir.z * speed;
+                }
             }
         }
 
@@ -86,9 +111,28 @@ export function updatePlayer(player, keys, buildings, config, camera, train) {
     player.velocityY -= gravity;
     player.position.y += player.velocityY;
 
-    let groundY = 0.9;
+    let groundY = 0.9; // 基本の地面の高さ（Y=0の床 + プレイヤー高さの半分0.9）
 
-    // 建物の屋根への着地判定
+    // --- 1. 一段低い空間（Pit）の床判定 ---
+    if (pits) {
+        for (const pit of pits) {
+            const p = pit.data;
+            const halfW = p.width / 2;
+            const halfD = p.depth / 2;
+
+            if (player.position.x > p.positionX - halfW &&
+                player.position.x < p.positionX + halfW &&
+                player.position.z > p.positionZ - halfD &&
+                player.position.z < p.positionZ + halfD) {
+                
+                // 穴の領域内にいる間は、着地高さを「穴の底」に変更
+                groundY = pit.floorY + 0.9;
+                break;
+            }
+        }
+    }
+
+    // --- 2. 建物の屋根への着地判定 ---
     for (const b of buildings) {
         const halfW = b.geometry.parameters.width / 2;
         const halfD = b.geometry.parameters.depth / 2;
@@ -108,36 +152,31 @@ export function updatePlayer(player, keys, buildings, config, camera, train) {
         }
     }
 
-    // --- 地面との接地処理 ---
+    // --- 3. 地面（または穴の底・屋根）との接地処理 ---
     if (player.position.y <= groundY) {
         player.position.y = groundY;
         player.velocityY = 0;
         player.isJumping = false;
     }
 
-    // --- 電車（板）の上に乗っている場合の追従処理 ---
+    // --- 4. 電車（板）の上に乗っている場合の追従処理 ---
     if (train) {
-        const halfW = 3 / 2; // 電車板の幅の半分
-        const halfD = 5 / 2; // 電車板の奥行きの半分
+        const halfW = 3 / 2;
+        const halfD = 5 / 2;
 
-        // 電車の範囲内にプレイヤーがいるか
         const isOnTrainX = player.position.x > train.position.x - halfW && player.position.x < train.position.x + halfW;
         const isOnTrainZ = player.position.z > train.position.z - halfD && player.position.z < train.position.z + halfD;
 
-        const trainSurfaceY = 1.0 + 0.15; // 電車の上面の高さ
+        const trainSurfaceY = 1.0 + 0.15;
         const playerFeetY = player.position.y - 0.9;
 
-        // 接地判定
         if (isOnTrainX && isOnTrainZ && playerFeetY >= trainSurfaceY - 0.3 && playerFeetY <= trainSurfaceY + 0.3) {
-            // 前フレームからの電車の移動量（差分）を計算
             const trainDeltaX = train.position.x - train.prevX;
             const trainDeltaZ = train.position.z - train.prevZ;
 
-            // プレイヤーを電車と一緒に移動させる
             player.position.x += trainDeltaX;
             player.position.z += trainDeltaZ;
 
-            // 足元を電車の上面に合わせる
             player.position.y = trainSurfaceY + 0.9;
             player.velocityY = 0;
             player.isJumping = false;

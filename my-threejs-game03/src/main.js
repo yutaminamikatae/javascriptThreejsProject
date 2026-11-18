@@ -27,7 +27,7 @@ const ambientLight = new THREE.AmbientLight(0xffffff, 1.2);
 scene.add(ambientLight);
 
 // 世界・電車・プレイヤーの生成
-const { buildings, train } = createWorld(scene); // ★建物と電車を受け取る
+const { buildings, train, waters, pits }= createWorld(scene); // ★建物と電車を受け取る
 const player = createPlayer(scene);
 
 let isTPSMode = CONFIG.initialTPS;
@@ -73,7 +73,7 @@ function animate() {
     updateTrain(train);
 
     // 2. プレイヤーの移動処理（電車との当たり判定・同乗移動を含む）
-    updatePlayer(player, keys, buildings, CONFIG, camera, train);
+    updatePlayer(player, keys, buildings, CONFIG, camera, train, pits);
 
     // 3. カメラの追従処理
     controls.enabled = true;

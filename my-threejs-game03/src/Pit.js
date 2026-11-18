@@ -4,14 +4,25 @@ import { pitData } from './mapData.js';
 export function createPits(scene, textureLoader) {
     const pits = [];
 
-    // 穴の床と壁のテクスチャ（地面と同じか、少し濃い色のテクスチャ）
-    const pitTexture = textureLoader.load('./public/textures/ground.jpg');
-    pitTexture.wrapS = THREE.RepeatWrapping;
-    pitTexture.wrapT = THREE.RepeatWrapping;
-    pitTexture.colorSpace = THREE.SRGBColorSpace;
+    // 1. 床用のテクスチャ（地面と同じ ground.jpg）
+    const floorTexture = textureLoader.load('./public/textures/ground.jpg');
+    floorTexture.wrapS = THREE.RepeatWrapping;
+    floorTexture.wrapT = THREE.RepeatWrapping;
+    floorTexture.colorSpace = THREE.SRGBColorSpace;
 
-    const pitMaterial = new THREE.MeshBasicMaterial({ 
-        map: pitTexture, 
+    const floorMaterial = new THREE.MeshBasicMaterial({ 
+        map: floorTexture, 
+        side: THREE.DoubleSide 
+    });
+
+    // 2. 側壁用のテクスチャ（wall.jpg）
+    const wallTexture = textureLoader.load('./public/textures/wall.jpg');
+    wallTexture.wrapS = THREE.RepeatWrapping;
+    wallTexture.wrapT = THREE.RepeatWrapping;
+    wallTexture.colorSpace = THREE.SRGBColorSpace;
+
+    const wallMaterial = new THREE.MeshBasicMaterial({ 
+        map: wallTexture, 
         side: THREE.DoubleSide 
     });
 
@@ -21,34 +32,23 @@ export function createPits(scene, textureLoader) {
 
         // 1. 一段低い「底面（床）」の生成
         const floorGeometry = new THREE.PlaneGeometry(data.width, data.depth);
-        const floorMesh = new THREE.Mesh(floorGeometry, pitMaterial);
+        const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
         floorMesh.rotation.x = Math.PI / 2;
-        // 地面(Y=0)より depthY 分だけ下に配置
         floorMesh.position.set(data.positionX, -data.depthY, data.positionZ);
         scene.add(floorMesh);
 
-        // 2. 穴の4周を囲む「壁（側壁）」の生成
+        // 2. 穴の前後（北側・南側）の壁の生成
         // 北側の壁
-        const wallNorth = createWallMesh(data.width, data.depthY, pitMaterial);
+        const wallNorth = createWallMesh(data.width, data.depthY, wallMaterial);
         wallNorth.position.set(data.positionX, -data.depthY / 2, data.positionZ - halfD);
         scene.add(wallNorth);
 
         // 南側の壁
-        const wallSouth = createWallMesh(data.width, data.depthY, pitMaterial);
+        const wallSouth = createWallMesh(data.width, data.depthY, wallMaterial);
         wallSouth.position.set(data.positionX, -data.depthY / 2, data.positionZ + halfD);
         scene.add(wallSouth);
 
-        // 東側の壁
-        const wallEast = createWallMesh(data.depthY, data.depth, pitMaterial);
-        wallEast.rotation.y = Math.PI / 2;
-        wallEast.position.set(data.positionX + halfW, -data.depthY / 2, data.positionZ);
-        scene.add(wallEast);
-
-        // 西側の壁
-        const wallWest = createWallMesh(data.depthY, data.depth, pitMaterial);
-        wallWest.rotation.y = Math.PI / 2;
-        wallWest.position.set(data.positionX - halfW, -data.depthY / 2, data.positionZ);
-        scene.add(wallWest);
+        // ※ 左右（東西）にあった不要な板（壁）は削除しました
 
         // 衝突判定や接地判定に使うデータをオブジェクトとして保持
         pits.push({
