@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { buildingData } from './mapData.js';
 import { createTrain } from './Train.js'; // ★電車モジュールをインポート
+import { createWater } from './Water.js';
 
 export function createWorld(scene) {
     scene.background = new THREE.Color(0x111111);
@@ -41,7 +42,8 @@ export function createWorld(scene) {
 
     // ★ 外部化した Train.js から電車を作成
     const train = createTrain(scene);
+    const waters = createWater(scene);
 
     // main.js で使うために建物の配列と電車を返却
-    return { buildings, train };
+    return { buildings, train, waters };
 }

@@ -1,3 +1,6 @@
+import { waterData } from './waterData.js';
+import { pitData } from './pitData.js';
+
 // 建物の配置データ
 export const buildingData = [
     { width: 4, height: 1.5, depth: 4, positionX: 0, positionZ: -6 },
@@ -5,3 +8,6 @@ export const buildingData = [
     { width: 3, height: 6,   depth: 3, positionX: 6, positionZ: -6 },
     { width: 3, height: 4,   depth: 3, positionX: -6, positionZ: 6 }
 ];
+
+// 水データと穴データをそのままエクスポート
+export { waterData, pitData };
