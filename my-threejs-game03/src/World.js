@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-    MAP_OUTLINE_POINTS,
+    AREA_GROUND_TEXTURES,
     buildingData,
     waterData,
     pitData,
@@ -56,53 +56,98 @@ function isInWestSquare(x, z) {
     return x >= -15 && x <= 15 && z >= -15 && z <= 15;
 }
 
-function buildGroundMesh(textureLoader, outlinePoints, pits, repeatX, repeatY) {
-    const baseGroundTex = getCachedTexture(textureLoader, DEFAULT_GROUND_TEXTURE, null, {
-        repeatX,
-        repeatY
-    });
+function isPitHole(pit) {
+    return (pit?.depthY ?? 0) > 0 && !((pit?.heightY ?? 0) > 0);
+}
 
-    const groundShape = new THREE.Shape();
-    outlinePoints.forEach((pt, idx) => {
+function createPolygonShape(points) {
+    const shape = new THREE.Shape();
+    points.forEach((pt, idx) => {
         if (idx === 0) {
-            groundShape.moveTo(pt.x, -pt.z);
+            shape.moveTo(pt.x, -pt.z);
         } else {
-            groundShape.lineTo(pt.x, -pt.z);
+            shape.lineTo(pt.x, -pt.z);
         }
     });
-    groundShape.closePath();
+    shape.closePath();
+    return shape;
+}
+
+function createAreaGroundMesh(textureLoader, points, texturePath, repeatX, repeatY, pits = []) {
+    const tex = getCachedTexture(
+        textureLoader,
+        texturePath || DEFAULT_GROUND_TEXTURE,
+        DEFAULT_GROUND_TEXTURE,
+        { repeatX, repeatY }
+    );
+
+    const shape = createPolygonShape(points);
 
     if (Array.isArray(pits)) {
-        pits.forEach(pit => {
-            const halfW = pit.width / 2;
-            const halfD = pit.depth / 2;
+        pits.filter(isPitHole).forEach(pit => {
+            const halfW = (pit.width ?? 6) / 2;
+            const halfD = (pit.depth ?? 5) / 2;
+            const cx = pit.positionX ?? 0;
+            const cy = -(pit.positionZ ?? 0);
+
             const hole = new THREE.Path();
-
-            const cx = pit.positionX;
-            const cy = -pit.positionZ;
-
             hole.moveTo(cx - halfW, cy - halfD);
-            hole.lineTo(cx + halfW, cy - halfD);
-            hole.lineTo(cx + halfW, cy + halfD);
             hole.lineTo(cx - halfW, cy + halfD);
+            hole.lineTo(cx + halfW, cy + halfD);
+            hole.lineTo(cx + halfW, cy - halfD);
             hole.closePath();
-
-            groundShape.holes.push(hole);
+            shape.holes.push(hole);
         });
     }
 
-    const groundGeometry = new THREE.ShapeGeometry(groundShape);
-    const groundMesh = new THREE.Mesh(
-        groundGeometry,
-        new THREE.MeshBasicMaterial({ map: baseGroundTex, side: THREE.DoubleSide })
+    const geometry = new THREE.ShapeGeometry(shape);
+    const material = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.rotation.x = -Math.PI / 2;
+    return mesh;
+}
+
+function createRaisedSteps(textureLoader, pits = [], eastTexturePath) {
+    const group = new THREE.Group();
+    if (!Array.isArray(pits)) return group;
+
+    const stepTex = getCachedTexture(
+        textureLoader,
+        eastTexturePath || DEFAULT_GROUND_TEXTURE,
+        DEFAULT_GROUND_TEXTURE,
+        { repeatX: 1, repeatY: 1 }
     );
-    groundMesh.rotation.x = -Math.PI / 2;
-    return groundMesh;
+    const sideTex = getCachedTexture(
+        textureLoader,
+        DEFAULT_WALL_TEXTURE,
+        DEFAULT_GROUND_TEXTURE,
+        { repeatX: 1, repeatY: 1 }
+    );
+
+    pits.filter(p => (p?.heightY ?? 0) > 0).forEach(step => {
+        const h = step.heightY;
+        const geo = new THREE.BoxGeometry(step.width, h, step.depth);
+        const mats = [
+            new THREE.MeshBasicMaterial({ map: sideTex }),
+            new THREE.MeshBasicMaterial({ map: sideTex }),
+            new THREE.MeshBasicMaterial({ map: stepTex }),
+            new THREE.MeshBasicMaterial({ map: sideTex }),
+            new THREE.MeshBasicMaterial({ map: sideTex }),
+            new THREE.MeshBasicMaterial({ map: sideTex })
+        ];
+        const mesh = new THREE.Mesh(geo, mats);
+        mesh.position.set(step.positionX, h / 2, step.positionZ);
+        group.add(mesh);
+    });
+
+    return group;
 }
 
 function buildTilesGroup(textureLoader, tiles, pits) {
     const group = new THREE.Group();
     if (!Array.isArray(tiles)) return group;
+
+    const holePits = Array.isArray(pits) ? pits.filter(isPitHole) : [];
 
     tiles.forEach(tile => {
         const tileW = tile.width ?? 6;
@@ -110,15 +155,18 @@ function buildTilesGroup(textureLoader, tiles, pits) {
         const tileX = tile.x ?? 0;
         const tileZ = tile.z ?? 0;
 
-        const overlapsPit = Array.isArray(pits) && pits.some(pit => {
-            const pitHalfW = pit.width / 2;
-            const pitHalfD = pit.depth / 2;
+        const overlapsHole = holePits.some(pit => {
+            const pitHalfW = (pit.width ?? 6) / 2;
+            const pitHalfD = (pit.depth ?? 5) / 2;
+            const pitX = pit.positionX ?? 0;
+            const pitZ = pit.positionZ ?? 0;
+
             return (
-                Math.abs(tileX - pit.positionX) < (tileW / 2 + pitHalfW) &&
-                Math.abs(tileZ - pit.positionZ) < (tileD / 2 + pitHalfD)
+                Math.abs(tileX - pitX) < (tileW / 2 + pitHalfW) &&
+                Math.abs(tileZ - pitZ) < (tileD / 2 + pitHalfD)
             );
         });
-        if (overlapsPit) return;
+        if (overlapsHole) return;
 
         const tileTex = getCachedTexture(
             textureLoader,
@@ -145,29 +193,37 @@ function buildTilesGroup(textureLoader, tiles, pits) {
     return group;
 }
 
+function resolveBuildingMaterials(textureLoader, data, fallbackWallTex) {
+    if (Array.isArray(data.textures) && data.textures.length === 6) {
+        return data.textures.map(path => {
+            const tex = getCachedTexture(textureLoader, path || DEFAULT_WALL_TEXTURE, DEFAULT_WALL_TEXTURE);
+            return new THREE.MeshBasicMaterial({ map: tex });
+        });
+    }
+
+    if (typeof data.texture === 'string' && data.texture.length > 0) {
+        const tex = getCachedTexture(textureLoader, data.texture, DEFAULT_WALL_TEXTURE);
+        return new THREE.MeshBasicMaterial({ map: tex });
+    }
+
+    return new THREE.MeshBasicMaterial({ map: fallbackWallTex });
+}
+
 function buildBuildings(textureLoader, items, targetGroup, fallbackWallTex) {
     const meshes = [];
     if (!Array.isArray(items)) return meshes;
 
     items.forEach(data => {
         const geometry = new THREE.BoxGeometry(data.width, data.height, data.depth);
+        const materials = resolveBuildingMaterials(textureLoader, data, fallbackWallTex);
 
-        let materials;
-        if (Array.isArray(data.textures) && data.textures.length === 6) {
-            materials = data.textures.map(path => {
-                const tex = getCachedTexture(textureLoader, path, DEFAULT_WALL_TEXTURE);
-                return new THREE.MeshBasicMaterial({ map: tex });
-            });
-        } else {
-            materials = new THREE.MeshBasicMaterial({ map: fallbackWallTex });
-        }
-
+        const posY = typeof data.positionY === 'number' ? data.positionY : data.height / 2;
         const mesh = new THREE.Mesh(geometry, materials);
-        mesh.position.set(data.positionX, data.height / 2, data.positionZ);
+        mesh.position.set(data.positionX, posY, data.positionZ);
         targetGroup.add(mesh);
 
         mesh.box3 = new THREE.Box3().setFromObject(mesh);
-        mesh.topY = data.height;
+        mesh.topY = posY + data.height / 2;
         meshes.push(mesh);
     });
 
@@ -182,21 +238,45 @@ export function createWorld(scene, initialOptions = {}) {
 
     let isMapExpanded = initialOptions.isMapExpanded ?? true;
 
-    // --- 1. 拡張マップ（西30x30 + 連絡通路10x10 + 東30x30） ---
+    const areaTextures = AREA_GROUND_TEXTURES || {
+        west: DEFAULT_GROUND_TEXTURE,
+        bridge: DEFAULT_GROUND_TEXTURE,
+        east: DEFAULT_GROUND_TEXTURE
+    };
+
     const expandedGroup = new THREE.Group();
     expandedGroup.name = 'ExpandedMapGroup';
 
-    const expandedOutline = Array.isArray(MAP_OUTLINE_POINTS) && MAP_OUTLINE_POINTS.length >= 3
-        ? MAP_OUTLINE_POINTS
-        : [
-            { x: -15, z: -15 }, { x: 15, z: -15 }, { x: 15, z: -5 },
-            { x: 25, z: -5 },  { x: 25, z: -15 }, { x: 55, z: -15 },
-            { x: 55, z: 15 },  { x: 25, z: 15 },  { x: 25, z: 5 },
-            { x: 15, z: 5 },   { x: 15, z: 15 },  { x: -15, z: 15 }
-        ];
+    const westPoints = [
+        { x: -15, z: -15 },
+        { x:  15, z: -15 },
+        { x:  15, z:  15 },
+        { x: -15, z:  15 }
+    ];
+    const bridgePoints = [
+        { x: 15, z: -5 },
+        { x: 25, z: -5 },
+        { x: 25, z:  5 },
+        { x: 15, z:  5 }
+    ];
+    const eastPoints = [
+        { x: 25, z: -15 },
+        { x: 55, z: -15 },
+        { x: 55, z:  15 },
+        { x: 25, z:  15 }
+    ];
 
-    expandedGroup.add(buildGroundMesh(textureLoader, expandedOutline, pitData, 14, 6));
+    const westPits = (pitData || []).filter(p => isInWestSquare(p.positionX, p.positionZ));
+    const eastPits = (pitData || []).filter(p => !isInWestSquare(p.positionX, p.positionZ));
+    const eastHolePits = eastPits.filter(isPitHole);
+
+    expandedGroup.add(createAreaGroundMesh(textureLoader, westPoints, areaTextures.west, 6, 6, westPits));
+    expandedGroup.add(createAreaGroundMesh(textureLoader, bridgePoints, areaTextures.bridge, 2, 2, []));
+    expandedGroup.add(createAreaGroundMesh(textureLoader, eastPoints, areaTextures.east, 6, 6, eastHolePits));
+
     expandedGroup.add(buildTilesGroup(textureLoader, groundTiles, pitData));
+    expandedGroup.add(createRaisedSteps(textureLoader, eastPits, areaTextures.east));
+
     const expandedBuildings = buildBuildings(textureLoader, buildingData, expandedGroup, fallbackWallTex);
 
     const expandedWaterGroup = new THREE.Group();
@@ -204,7 +284,7 @@ export function createWorld(scene, initialOptions = {}) {
     expandedGroup.add(expandedWaterGroup);
 
     const expandedPitGroup = new THREE.Group();
-    createPits(expandedPitGroup, textureLoader, pitData);
+    createPits(expandedPitGroup, textureLoader, (pitData || []).filter(isPitHole));
     expandedGroup.add(expandedPitGroup);
 
     const expandedProps = createProps(expandedGroup, propData, {
@@ -213,23 +293,15 @@ export function createWorld(scene, initialOptions = {}) {
 
     scene.add(expandedGroup);
 
-    // --- 2. 西側単体マップ（西30x30 のみ） ---
     const westOnlyGroup = new THREE.Group();
     westOnlyGroup.name = 'WestOnlyMapGroup';
 
-    const westOutline = [
-        { x: -15, z: -15 },
-        { x:  15, z: -15 },
-        { x:  15, z:  15 },
-        { x: -15, z:  15 }
-    ];
-    const westPits = (pitData || []).filter(p => isInWestSquare(p.positionX, p.positionZ));
     const westWaters = (waterData || []).filter(w => isInWestSquare(w.positionX, w.positionZ));
     const westTiles = (groundTiles || []).filter(t => isInWestSquare(t.x, t.z));
     const westBuildingData = (buildingData || []).filter(b => isInWestSquare(b.positionX, b.positionZ));
     const westPropData = (propData || []).filter(pr => isInWestSquare(pr.x, pr.z));
 
-    westOnlyGroup.add(buildGroundMesh(textureLoader, westOutline, westPits, 6, 6));
+    westOnlyGroup.add(createAreaGroundMesh(textureLoader, westPoints, areaTextures.west, 6, 6, westPits));
     westOnlyGroup.add(buildTilesGroup(textureLoader, westTiles, westPits));
     const westBuildings = buildBuildings(textureLoader, westBuildingData, westOnlyGroup, fallbackWallTex);
 
@@ -247,10 +319,25 @@ export function createWorld(scene, initialOptions = {}) {
 
     scene.add(westOnlyGroup);
 
-    // --- 3. 電車（西側 X = -11.5 を常時走行） ---
     const train = createTrain(scene);
 
-    const worldState = {
+    const setMapExpanded = (expanded) => {
+        isMapExpanded = Boolean(expanded);
+        expandedGroup.visible = isMapExpanded;
+        westOnlyGroup.visible = !isMapExpanded;
+        return isMapExpanded;
+    };
+
+    const setPropsVisible = (visible) => {
+        const next = Boolean(visible);
+        expandedProps.setVisible(next);
+        westProps.setVisible(next);
+        return next;
+    };
+
+    setMapExpanded(isMapExpanded);
+
+    return {
         get isMapExpanded() {
             return isMapExpanded;
         },
@@ -264,28 +351,13 @@ export function createWorld(scene, initialOptions = {}) {
             return expandedProps.isVisible;
         },
         train,
-        setMapExpanded(expanded) {
-            isMapExpanded = Boolean(expanded);
-            expandedGroup.visible = isMapExpanded;
-            westOnlyGroup.visible = !isMapExpanded;
-            return isMapExpanded;
-        },
+        setMapExpanded,
         toggleMapExpanded() {
-            return this.setMapExpanded(!isMapExpanded);
+            return setMapExpanded(!isMapExpanded);
         },
-        setPropsVisible(visible) {
-            const next = Boolean(visible);
-            expandedProps.setVisible(next);
-            westProps.setVisible(next);
-            return next;
-        },
+        setPropsVisible,
         togglePropsVisible() {
-            const next = !expandedProps.isVisible;
-            return this.setPropsVisible(next);
+            return setPropsVisible(!expandedProps.isVisible);
         }
     };
-
-    worldState.setMapExpanded(isMapExpanded);
-
-    return worldState;
 }

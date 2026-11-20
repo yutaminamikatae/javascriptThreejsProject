@@ -1,63 +1,73 @@
 import * as THREE from 'three';
 import { pitData } from './mapData.js';
 
-export function createPits(scene, textureLoader) {
+export function createPits(scene, textureLoader, pitData) {
     const pits = [];
+    if (!Array.isArray(pitData) || pitData.length === 0) return pits;
 
-    // 1. 床用のテクスチャ（地面と同じ ground.jpg）
-    const floorTexture = textureLoader.load('./public/textures/ground.jpg');
-    floorTexture.wrapS = THREE.RepeatWrapping;
-    floorTexture.wrapT = THREE.RepeatWrapping;
-    floorTexture.colorSpace = THREE.SRGBColorSpace;
+    const loader = textureLoader || new THREE.TextureLoader();
 
-    const floorMaterial = new THREE.MeshBasicMaterial({ 
-        map: floorTexture, 
-        side: THREE.DoubleSide 
+    const floorTex = loader.load('./public/textures/pit_floor.jpg', undefined, undefined, () => {
+        floorTex.colorSpace = THREE.SRGBColorSpace;
     });
+    floorTex.colorSpace = THREE.SRGBColorSpace;
 
-    // 2. 側壁用のテクスチャ（wall.jpg）
-    const wallTexture = textureLoader.load('./public/textures/wall.jpg');
-    wallTexture.wrapS = THREE.RepeatWrapping;
-    wallTexture.wrapT = THREE.RepeatWrapping;
-    wallTexture.colorSpace = THREE.SRGBColorSpace;
-
-    const wallMaterial = new THREE.MeshBasicMaterial({ 
-        map: wallTexture, 
-        side: THREE.DoubleSide 
+    const wallTex = loader.load('./public/textures/pit_wall.jpg', undefined, undefined, () => {
+        wallTex.colorSpace = THREE.SRGBColorSpace;
     });
+    wallTex.colorSpace = THREE.SRGBColorSpace;
+
+    const floorMat = new THREE.MeshBasicMaterial({ map: floorTex, side: THREE.DoubleSide });
+    const wallMat = new THREE.MeshBasicMaterial({ map: wallTex, side: THREE.DoubleSide });
 
     pitData.forEach(data => {
-        const halfW = data.width / 2;
-        const halfD = data.depth / 2;
+        if (!data || (data.heightY ?? 0) > 0) return;
 
-        // 1. 一段低い「底面（床）」の生成
-        const floorGeometry = new THREE.PlaneGeometry(data.width, data.depth);
-        const floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
-        floorMesh.rotation.x = Math.PI / 2;
-        floorMesh.position.set(data.positionX, -data.depthY, data.positionZ);
-        scene.add(floorMesh);
+        const width = data.width ?? 6;
+        const depth = data.depth ?? 5;
+        const depthY = Math.abs(data.depthY ?? 1.5);
+        const cx = data.positionX ?? 0;
+        const cz = data.positionZ ?? 0;
 
-        // 2. 穴の前後（北側・南側）の壁の生成
-        // 北側の壁
-        const wallNorth = createWallMesh(data.width, data.depthY, wallMaterial);
-        wallNorth.position.set(data.positionX, -data.depthY / 2, data.positionZ - halfD);
-        scene.add(wallNorth);
+        const pitGroup = new THREE.Group();
+        pitGroup.position.set(cx, 0, cz);
 
-        // 南側の壁
-        const wallSouth = createWallMesh(data.width, data.depthY, wallMaterial);
-        wallSouth.position.set(data.positionX, -data.depthY / 2, data.positionZ + halfD);
-        scene.add(wallSouth);
+        // 窪みの底面（1段下なら -1.5、2段下なら -3.0 など depthY に応じた深さ）
+        const floorGeo = new THREE.PlaneGeometry(width, depth);
+        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.position.y = -depthY;
+        pitGroup.add(floorMesh);
 
-        // ※ 左右（東西）にあった不要な板（壁）は削除しました
+        // 内側の4方の壁面
+        const wallZGeo = new THREE.PlaneGeometry(width, depthY);
+        const northWall = new THREE.Mesh(wallZGeo, wallMat);
+        northWall.position.set(0, -depthY / 2, -depth / 2);
+        pitGroup.add(northWall);
 
-        // 衝突判定や接地判定に使うデータをオブジェクトとして保持
+        const southWall = new THREE.Mesh(wallZGeo, wallMat);
+        southWall.rotation.y = Math.PI;
+        southWall.position.set(0, -depthY / 2, depth / 2);
+        pitGroup.add(southWall);
+
+        const wallXGeo = new THREE.PlaneGeometry(depth, depthY);
+        const westWall = new THREE.Mesh(wallXGeo, wallMat);
+        westWall.rotation.y = Math.PI / 2;
+        westWall.position.set(-width / 2, -depthY / 2, 0);
+        pitGroup.add(westWall);
+
+        const eastWall = new THREE.Mesh(wallXGeo, wallMat);
+        eastWall.rotation.y = -Math.PI / 2;
+        eastWall.position.set(width / 2, -depthY / 2, 0);
+        pitGroup.add(eastWall);
+
+        if (scene) {
+            scene.add(pitGroup);
+        }
+
         pits.push({
-            data: data,
-            floorY: -data.depthY,
-            box: new THREE.Box3(
-                new THREE.Vector3(data.positionX - halfW, -data.depthY, data.positionZ - halfD),
-                new THREE.Vector3(data.positionX + halfW, 0, data.positionZ + halfD)
-            )
+            ...data,
+            group: pitGroup
         });
     });
 

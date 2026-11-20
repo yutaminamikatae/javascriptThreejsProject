@@ -36,7 +36,6 @@ function createPartMaterial(textureLoader, path, fallbackPath) {
 }
 
 export function createTrain(scene) {
-    // 進行方向（+X）に合わせて車体長（X方向=8、Z方向=4）に調整
     const width = 8;
     const height = 3.5;
     const depth = 4;
@@ -52,7 +51,7 @@ export function createTrain(scene) {
     floorMesh.position.y = 0.05;
     trainGroup.add(floorMesh);
 
-    // 側面（奥側 Z = -depth/2）
+    // 奥側面（Z = -depth/2）
     const backMat = createPartMaterial(textureLoader, TRAIN_TEXTURES.backWall, TRAIN_TEXTURES.fallback);
     const backGeo = new THREE.PlaneGeometry(width, height);
     const backWall = new THREE.Mesh(backGeo, backMat);
@@ -96,7 +95,6 @@ export function updateTrain(train) {
     train.position.z = TRAIN_POS_Z;
     train.position.x += TRAIN_SPEED_X;
 
-    // 東側エリアの端（TRAIN_END_X）を超えたら西側スタート位置（TRAIN_START_X）へループ
     if (train.position.x > TRAIN_END_X) {
         train.position.x = TRAIN_START_X;
     }

@@ -6,13 +6,84 @@ const MOVE_SPEED = 0.14;
 const JUMP_VELOCITY = 0.24;
 const GRAVITY = 0.011;
 const FALL_RESPAWN_Y = -12;
+const DEFAULT_PLAYER_TEXTURE = './public/textures/player.png';
 
-export function createPlayer(scene) {
+function createPlayerMaterial(texturePath) {
+    const material = new THREE.MeshBasicMaterial({
+        color: 0xffffff
+    });
+
+    if (!texturePath) {
+        material.color.setHex(0x38bdf8);
+        return material;
+    }
+
+    const loader = new THREE.TextureLoader();
+    const texture = loader.load(
+        texturePath,
+        (loadedTex) => {
+            loadedTex.colorSpace = THREE.SRGBColorSpace;
+            material.map = loadedTex;
+            material.color.setHex(0xffffff);
+            material.needsUpdate = true;
+        },
+        undefined,
+        () => {
+            // 画像が見つからない場合は単色カラーへフォールバック
+            material.map = null;
+            material.color.setHex(0x38bdf8);
+            material.needsUpdate = true;
+        }
+    );
+    texture.colorSpace = THREE.SRGBColorSpace;
+    material.map = texture;
+
+    return material;
+}
+
+function createSixFacePlayerMaterials(textures) {
+    const loader = new THREE.TextureLoader();
+    return textures.map((path) => {
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+        if (!path) {
+            mat.color.setHex(0x38bdf8);
+            return mat;
+        }
+        const tex = loader.load(
+            path,
+            (loadedTex) => {
+                loadedTex.colorSpace = THREE.SRGBColorSpace;
+                mat.map = loadedTex;
+                mat.color.setHex(0xffffff);
+                mat.needsUpdate = true;
+            },
+            undefined,
+            () => {
+                mat.map = null;
+                mat.color.setHex(0x38bdf8);
+                mat.needsUpdate = true;
+            }
+        );
+        tex.colorSpace = THREE.SRGBColorSpace;
+        mat.map = tex;
+        return mat;
+    });
+}
+
+export function createPlayer(scene, options = {}) {
     const geometry = new THREE.BoxGeometry(0.8, 1.8, 0.8);
-    const material = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
-    const mesh = new THREE.Mesh(geometry, material);
 
-    mesh.position.set(0, PLAYER_HALF_HEIGHT, 0);
+    // 6面配列（options.textures）が渡された場合は6面個別、それ以外は単一画像（options.texturePath）
+    const materialOrMaterials = Array.isArray(options.textures) && options.textures.length === 6
+        ? createSixFacePlayerMaterials(options.textures)
+        : createPlayerMaterial(options.texturePath ?? DEFAULT_PLAYER_TEXTURE);
+
+    const mesh = new THREE.Mesh(geometry, materialOrMaterials);
+
+    const startX = typeof options.startX === 'number' ? options.startX : 0;
+    const startZ = typeof options.startZ === 'number' ? options.startZ : 0;
+
+    mesh.position.set(startX, PLAYER_HALF_HEIGHT, startZ);
     mesh.velocityY = 0;
     mesh.isJumping = false;
 
@@ -35,9 +106,13 @@ export function isOverMapGround(x, z, isMapExpanded = true) {
     return inWestSquare || inBridge || inEastSquare;
 }
 
-// 段差（Pit）の床高さを取得（穴に入っている場合は -depthY、それ以外は 0）
-function getPitFloorY(x, z, pits = []) {
+// 段差・上り段差の床高さを取得
+// ・depthY > 0（下り段差・窪み）：-depthY
+// ・heightY > 0（1段上の段差）：+heightY
+function getTerrainFloorY(x, z, pits = []) {
     if (!Array.isArray(pits) || pits.length === 0) return 0;
+
+    let floorY = 0;
 
     for (const pit of pits) {
         if (!pit) continue;
@@ -45,16 +120,20 @@ function getPitFloorY(x, z, pits = []) {
         const pz = pit.positionZ ?? pit.z ?? 0;
         const halfW = (pit.width ?? 6) / 2;
         const halfD = (pit.depth ?? 5) / 2;
-        const depthY = Math.abs(pit.depthY ?? 1.5);
 
-        const insideX = Math.abs(x - px) < halfW - PLAYER_RADIUS * 0.5;
-        const insideZ = Math.abs(z - pz) < halfD - PLAYER_RADIUS * 0.5;
+        const insideX = Math.abs(x - px) < halfW - PLAYER_RADIUS * 0.4;
+        const insideZ = Math.abs(z - pz) < halfD - PLAYER_RADIUS * 0.4;
 
-        if (insideX && insideZ) {
-            return -depthY;
+        if (!insideX || !insideZ) continue;
+
+        if ((pit.heightY ?? 0) > 0) {
+            floorY = Math.max(floorY, pit.heightY);
+        } else if ((pit.depthY ?? 0) > 0) {
+            floorY = Math.min(floorY, -Math.abs(pit.depthY));
         }
     }
-    return 0;
+
+    return floorY;
 }
 
 // ビル群の屋上着地・側面衝突判定
@@ -135,6 +214,7 @@ function resolveBuildingCollisions(player, buildings = [], prevFeetY = 0) {
     return landedOnRoof;
 }
 
+// 電車（+X 方向進行・X ループ対応）の乗車連動・ワープ追従処理
 function resolveTrainInteraction(player, train) {
     if (!train || !train.position) return false;
 
@@ -234,12 +314,12 @@ export function updatePlayer(player, keys = {}, worldData = {}, cameraYaw = 0) {
     // 5. 電車との連動・ワープ追従判定
     const onTrain = resolveTrainInteraction(player, safeWorld.train);
 
-    // 6. 地面・段差（Pit）着地判定
+    // 6. 地面・段差（1段上 / 1段下 / 2段下）着地判定
     if (!onRoof && !onTrain) {
         const hasGround = isOverMapGround(player.position.x, player.position.z, isExpanded);
         if (hasGround) {
-            const pitFloorY = getPitFloorY(player.position.x, player.position.z, safeWorld.pits);
-            const targetCenterY = pitFloorY + PLAYER_HALF_HEIGHT;
+            const terrainFloorY = getTerrainFloorY(player.position.x, player.position.z, safeWorld.pits);
+            const targetCenterY = terrainFloorY + PLAYER_HALF_HEIGHT;
 
             if (player.position.y <= targetCenterY && player.velocityY <= 0) {
                 player.position.y = targetCenterY;
