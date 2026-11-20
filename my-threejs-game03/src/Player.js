@@ -1,185 +1,258 @@
 import * as THREE from 'three';
 
+const PLAYER_HALF_HEIGHT = 0.9;
+const PLAYER_RADIUS = 0.4;
+const MOVE_SPEED = 0.14;
+const JUMP_VELOCITY = 0.24;
+const GRAVITY = 0.011;
+const FALL_RESPAWN_Y = -12;
+
 export function createPlayer(scene) {
-    const playerGeometry = new THREE.BoxGeometry(0.8, 1.8, 0.8);
-    const textureLoader = new THREE.TextureLoader();
+    const geometry = new THREE.BoxGeometry(0.8, 1.8, 0.8);
+    const material = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const mesh = new THREE.Mesh(geometry, material);
 
-    const materials = [
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_leftside.jpg') }),  
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_rightside.jpg') }),  
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_top.png') }),   
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_bottom.png') }),
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_front.jpg') }), 
-        new THREE.MeshBasicMaterial({ map: textureLoader.load('./public/textures/player_back.jpg') })   
-    ];
+    mesh.position.set(0, PLAYER_HALF_HEIGHT, 0);
+    mesh.velocityY = 0;
+    mesh.isJumping = false;
 
-    materials.forEach(mat => {
-        if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
-    });
-
-    const player = new THREE.Mesh(playerGeometry, materials);
-    player.position.y = 0.9; 
-    scene.add(player);
-
-    player.velocityY = 0;
-    player.isJumping = false;
-
-    return player;
+    if (scene) {
+        scene.add(mesh);
+    }
+    return mesh;
 }
 
-// ★ 引数に train と pits を受け取れるように設定
-export function updatePlayer(player, keys, buildings, config, camera, train, pits) {
-    const speed = config.playerSpeed;
-    const gravity = config.gravity;
-    const jumpPower = config.jumpPower;
-
-    // --- カメラ基準の移動ベクトルの計算 ---
-    const cameraForward = new THREE.Vector3();
-    camera.getWorldDirection(cameraForward);
-    cameraForward.y = 0;
-    cameraForward.normalize();
-
-    const cameraRight = new THREE.Vector3();
-    cameraRight.crossVectors(cameraForward, new THREE.Vector3(0, 1, 0)).normalize();
-
-    const moveDir = new THREE.Vector3();
-    if (keys.ArrowUp || keys.w)    moveDir.add(cameraForward);
-    if (keys.ArrowDown || keys.s)  moveDir.sub(cameraForward);
-    if (keys.ArrowLeft || keys.a)  moveDir.sub(cameraRight);
-    if (keys.ArrowRight || keys.d) moveDir.add(cameraRight);
-
-    if (moveDir.lengthSq() > 0) {
-        moveDir.normalize();
+// 拡張マップ（西30x30 + 連絡通路10x10 + 東30x30）または西側単体マップ（西30x30）の地面判定
+export function isOverMapGround(x, z, isMapExpanded = true) {
+    const inWestSquare = x >= -15 && x <= 15 && z >= -15 && z <= 15;
+    if (!isMapExpanded) {
+        return inWestSquare;
     }
 
-    // --- 移動と壁（建物・段差の壁）との衝突判定 ---
-    if (moveDir.lengthSq() > 0) {
-        // X軸移動
-        player.position.x += moveDir.x * speed;
-        let playerBox = new THREE.Box3().setFromObject(player);
-        for (const b of buildings) {
-            if (playerBox.intersectsBox(b.box3) && (player.position.y - 0.9) < b.topY) {
-                player.position.x -= moveDir.x * speed;
-            }
-        }
-        // 穴の底にいるとき、地上（Y=0）の壁にめり込まないよう押し戻す判定
-        if (pits && (player.position.y - 0.9) < -0.1) {
-            for (const pit of pits) {
-                const p = pit.data;
-                const halfW = p.width / 2 - 0.4; // プレイヤーの半径分を考慮
-                const halfD = p.depth / 2 - 0.4;
-                // 穴の境界から外へ出ようとしたらX移動をキャンセル
-                if (Math.abs(player.position.x - p.positionX) > halfW &&
-                    Math.abs(player.position.z - p.positionZ) <= p.depth / 2) {
-                    player.position.x -= moveDir.x * speed;
-                }
-            }
-        }
+    const inBridge     = x >= 15  && x <= 25 && z >= -5  && z <= 5;
+    const inEastSquare = x >= 25  && x <= 55 && z >= -15 && z <= 15;
 
-        // Z軸移動
-        player.position.z += moveDir.z * speed;
-        playerBox.setFromObject(player);
-        for (const b of buildings) {
-            if (playerBox.intersectsBox(b.box3) && (player.position.y - 0.9) < b.topY) {
-                player.position.z -= moveDir.z * speed;
-            }
-        }
-        // 穴の底にいるとき、Z軸方向の壁にめり込まないよう押し戻す判定
-        if (pits && (player.position.y - 0.9) < -0.1) {
-            for (const pit of pits) {
-                const p = pit.data;
-                const halfW = p.width / 2 - 0.4;
-                const halfD = p.depth / 2 - 0.4;
-                if (Math.abs(player.position.z - p.positionZ) > halfD &&
-                    Math.abs(player.position.x - p.positionX) <= p.width / 2) {
-                    player.position.z -= moveDir.z * speed;
-                }
-            }
-        }
+    return inWestSquare || inBridge || inEastSquare;
+}
 
-        // プレイヤーの向きを変更
-        const angle = Math.atan2(moveDir.x, moveDir.z);
-        player.rotation.y = angle;
-    }
+// 段差（Pit）の床高さを取得（穴に入っている場合は -depthY、それ以外は 0）
+function getPitFloorY(x, z, pits = []) {
+    if (!Array.isArray(pits) || pits.length === 0) return 0;
 
-    // --- ジャンプと重力 ---
-    if (keys.Space && !player.isJumping) {
-        player.velocityY = jumpPower;
-        player.isJumping = true;
-    }
+    for (const pit of pits) {
+        if (!pit) continue;
+        const px = pit.positionX ?? pit.x ?? 0;
+        const pz = pit.positionZ ?? pit.z ?? 0;
+        const halfW = (pit.width ?? 6) / 2;
+        const halfD = (pit.depth ?? 5) / 2;
+        const depthY = Math.abs(pit.depthY ?? 1.5);
 
-    player.velocityY -= gravity;
-    player.position.y += player.velocityY;
+        const insideX = Math.abs(x - px) < halfW - PLAYER_RADIUS * 0.5;
+        const insideZ = Math.abs(z - pz) < halfD - PLAYER_RADIUS * 0.5;
 
-    let groundY = 0.9; // 基本の地面の高さ（Y=0の床 + プレイヤー高さの半分0.9）
-
-    // --- 1. 一段低い空間（Pit）の床判定 ---
-    if (pits) {
-        for (const pit of pits) {
-            const p = pit.data;
-            const halfW = p.width / 2;
-            const halfD = p.depth / 2;
-
-            if (player.position.x > p.positionX - halfW &&
-                player.position.x < p.positionX + halfW &&
-                player.position.z > p.positionZ - halfD &&
-                player.position.z < p.positionZ + halfD) {
-                
-                // 穴の領域内にいる間は、着地高さを「穴の底」に変更
-                groundY = pit.floorY + 0.9;
-                break;
-            }
+        if (insideX && insideZ) {
+            return -depthY;
         }
     }
+    return 0;
+}
 
-    // --- 2. 建物の屋根への着地判定 ---
-    for (const b of buildings) {
-        const halfW = b.geometry.parameters.width / 2;
-        const halfD = b.geometry.parameters.depth / 2;
+// ビル群の屋上着地・側面衝突判定
+function resolveBuildingCollisions(player, buildings = [], prevFeetY = 0) {
+    if (!Array.isArray(buildings) || buildings.length === 0) {
+        return false;
+    }
 
-        if (player.position.x > b.position.x - halfW &&
-            player.position.x < b.position.x + halfW &&
-            player.position.z > b.position.z - halfD &&
-            player.position.z < b.position.z + halfD) {
-            
-            const roofY = b.topY + 0.9;
+    let currFeetY = player.position.y - PLAYER_HALF_HEIGHT;
+    let landedOnRoof = false;
 
-            if (player.velocityY <= 0 && player.position.y >= roofY - 0.6 && player.position.y <= roofY + 0.6) {
-                if (roofY > groundY) {
-                    groundY = roofY;
-                }
+    for (const building of buildings) {
+        if (!building || !building.position) continue;
+
+        const params = building.geometry?.parameters ?? null;
+        const width = typeof building.width === 'number' ? building.width : (params?.width ?? 0);
+        const depth = typeof building.depth === 'number' ? building.depth : (params?.depth ?? 0);
+        const height = typeof building.height === 'number' ? building.height : (params?.height ?? 0);
+
+        if (width <= 0 || depth <= 0) continue;
+
+        const halfW = width / 2;
+        const halfD = depth / 2;
+        const topY = typeof building.topY === 'number'
+            ? building.topY
+            : (building.position.y + height / 2);
+
+        const minX = building.position.x - halfW - PLAYER_RADIUS;
+        const maxX = building.position.x + halfW + PLAYER_RADIUS;
+        const minZ = building.position.z - halfD - PLAYER_RADIUS;
+        const maxZ = building.position.z + halfD + PLAYER_RADIUS;
+
+        const insideXZ =
+            player.position.x > minX &&
+            player.position.x < maxX &&
+            player.position.z > minZ &&
+            player.position.z < maxZ;
+
+        if (!insideXZ) continue;
+
+        const velY = typeof player.velocityY === 'number' ? player.velocityY : 0;
+
+        const isDescendingOntoRoof =
+            velY <= 0 &&
+            prevFeetY >= topY - 0.35 &&
+            currFeetY <= topY + 0.05;
+
+        const isStandingOnRoof =
+            !player.isJumping &&
+            Math.abs(currFeetY - topY) <= 0.08;
+
+        if (isDescendingOntoRoof || isStandingOnRoof) {
+            player.position.y = topY + PLAYER_HALF_HEIGHT;
+            currFeetY = topY;
+            player.velocityY = 0;
+            player.isJumping = false;
+            landedOnRoof = true;
+            continue;
+        }
+
+        if (currFeetY < topY - 0.08) {
+            const overlapLeft = Math.abs(player.position.x - minX);
+            const overlapRight = Math.abs(maxX - player.position.x);
+            const overlapBack = Math.abs(player.position.z - minZ);
+            const overlapFront = Math.abs(maxZ - player.position.z);
+
+            const minOverlapX = Math.min(overlapLeft, overlapRight);
+            const minOverlapZ = Math.min(overlapBack, overlapFront);
+
+            if (minOverlapX < minOverlapZ) {
+                player.position.x = overlapLeft < overlapRight ? minX : maxX;
+            } else {
+                player.position.z = overlapBack < overlapFront ? minZ : maxZ;
             }
         }
     }
 
-    // --- 3. 地面（または穴の底・屋根）との接地処理 ---
-    if (player.position.y <= groundY) {
-        player.position.y = groundY;
-        player.velocityY = 0;
-        player.isJumping = false;
+    return landedOnRoof;
+}
+
+function resolveTrainInteraction(player, train) {
+    if (!train || !train.position) return false;
+
+    const halfW = 8 / 2;
+    const halfD = 4 / 2;
+    const prevX = typeof train.prevX === 'number' ? train.prevX : train.position.x;
+    const prevZ = typeof train.prevZ === 'number' ? train.prevZ : train.position.z;
+
+    const insideTrainX = Math.abs(player.position.x - train.position.x) < halfW;
+    const insideTrainZ = Math.abs(player.position.z - train.position.z) < halfD;
+    const playerFeetY = player.position.y - PLAYER_HALF_HEIGHT;
+    const isRiding = insideTrainX && insideTrainZ && playerFeetY >= -0.25 && playerFeetY < 1.5;
+
+    // 東側終点（52付近）から西側始点（-13付近）へワープした瞬間を検知
+    const trainWarped = prevX > 48 && train.position.x < -8;
+
+    if (trainWarped) {
+        const distFromPrevX = Math.abs(player.position.x - prevX);
+        if (insideTrainZ && distFromPrevX < halfW && playerFeetY >= -0.25 && playerFeetY < 1.5) {
+            const offsetX = player.position.x - prevX;
+            const offsetZ = player.position.z - train.position.z;
+
+            player.position.x = train.position.x + offsetX;
+            player.position.z = train.position.z + offsetZ;
+            player.position.y = PLAYER_HALF_HEIGHT + 0.05;
+            player.velocityY = 0;
+            player.isJumping = false;
+            return true;
+        }
     }
 
-    // --- 4. 電車（板）の上に乗っている場合の追従処理 ---
-    if (train) {
-        const halfW = 3 / 2;
-        const halfD = 5 / 2;
+    if (isRiding) {
+        const trainDeltaX = train.position.x - prevX;
+        const trainDeltaZ = train.position.z - prevZ;
 
-        const isOnTrainX = player.position.x > train.position.x - halfW && player.position.x < train.position.x + halfW;
-        const isOnTrainZ = player.position.z > train.position.z - halfD && player.position.z < train.position.z + halfD;
+        player.position.x += trainDeltaX;
+        player.position.z += trainDeltaZ;
 
-        const trainSurfaceY = 1.0 + 0.15;
-        const playerFeetY = player.position.y - 0.9;
-
-        if (isOnTrainX && isOnTrainZ && playerFeetY >= trainSurfaceY - 0.3 && playerFeetY <= trainSurfaceY + 0.3) {
-            const trainDeltaX = train.position.x - train.prevX;
-            const trainDeltaZ = train.position.z - train.prevZ;
-
-            player.position.x += trainDeltaX;
-            player.position.z += trainDeltaZ;
-
-            player.position.y = trainSurfaceY + 0.9;
+        if (player.position.y < PLAYER_HALF_HEIGHT + 0.05) {
+            player.position.y = PLAYER_HALF_HEIGHT + 0.05;
             player.velocityY = 0;
             player.isJumping = false;
         }
+        return true;
+    }
+
+    return false;
+}
+
+export function updatePlayer(player, keys = {}, worldData = {}, cameraYaw = 0) {
+    if (!player || !player.position) return;
+
+    const safeWorld = worldData && typeof worldData === 'object' ? worldData : {};
+    const isExpanded = safeWorld.isMapExpanded ?? true;
+
+    if (typeof player.velocityY !== 'number') player.velocityY = 0;
+    if (typeof player.isJumping !== 'boolean') player.isJumping = false;
+
+    const prevFeetY = player.position.y - PLAYER_HALF_HEIGHT;
+
+    // 1. 水平移動入力（cameraYaw 基準）
+    let screenRight = 0;
+    let screenForward = 0;
+
+    if (keys['KeyA'] || keys['ArrowLeft'])  screenRight -= 1;
+    if (keys['KeyD'] || keys['ArrowRight']) screenRight += 1;
+    if (keys['KeyW'] || keys['ArrowUp'])    screenForward += 1;
+    if (keys['KeyS'] || keys['ArrowDown'])  screenForward -= 1;
+
+    if (screenRight !== 0 || screenForward !== 0) {
+        const len = Math.hypot(screenRight, screenForward);
+        const rx = screenRight / len;
+        const fz = screenForward / len;
+
+        const rightX = Math.cos(cameraYaw);
+        const rightZ = -Math.sin(cameraYaw);
+        const fwdX = -Math.sin(cameraYaw);
+        const fwdZ = -Math.cos(cameraYaw);
+
+        player.position.x += (rx * rightX + fz * fwdX) * MOVE_SPEED;
+        player.position.z += (rx * rightZ + fz * fwdZ) * MOVE_SPEED;
+    }
+
+    // 2. ジャンプ入力
+    if (keys['Space'] && !player.isJumping) {
+        player.velocityY = JUMP_VELOCITY;
+        player.isJumping = true;
+    }
+
+    // 3. 重力適用
+    player.velocityY -= GRAVITY;
+    player.position.y += player.velocityY;
+
+    // 4. ビル屋上着地・側面衝突判定
+    const onRoof = resolveBuildingCollisions(player, safeWorld.buildings, prevFeetY);
+
+    // 5. 電車との連動・ワープ追従判定
+    const onTrain = resolveTrainInteraction(player, safeWorld.train);
+
+    // 6. 地面・段差（Pit）着地判定
+    if (!onRoof && !onTrain) {
+        const hasGround = isOverMapGround(player.position.x, player.position.z, isExpanded);
+        if (hasGround) {
+            const pitFloorY = getPitFloorY(player.position.x, player.position.z, safeWorld.pits);
+            const targetCenterY = pitFloorY + PLAYER_HALF_HEIGHT;
+
+            if (player.position.y <= targetCenterY && player.velocityY <= 0) {
+                player.position.y = targetCenterY;
+                player.velocityY = 0;
+                player.isJumping = false;
+            }
+        }
+    }
+
+    // 7. 落下復帰
+    if (player.position.y < FALL_RESPAWN_Y) {
+        player.position.set(0, PLAYER_HALF_HEIGHT + 0.1, 0);
+        player.velocityY = 0;
+        player.isJumping = false;
     }
 }
